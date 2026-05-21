@@ -24,7 +24,7 @@ RUNTIME_DIR = APP_DATA_DIR / "runtime"
 TOOLS_DIR = APP_DATA_DIR / "tools"
 STATE_FILE = RUNTIME_DIR / "launcher_state.json"
 
-DEFAULT_EXE_FIELD = "./ied_mms_server.exe"
+DEFAULT_EXE_FIELD = "./ied_mms_server_real.exe"
 DEFAULT_NETWORK_ADAPTER = "Ethernet"
 DEFAULT_PORT = 102
 DEFAULT_WEB_HOST = "127.0.0.1"
@@ -32,6 +32,12 @@ DEFAULT_WEB_PORT = 8787
 AUTO_RANDOM_INTERVAL_MS = 1000
 PROCESS_POLL_INTERVAL_MS = 500
 MAX_LOG_LINES = 250
+
+HARDCODED_IED_KEYS_BY_NAME = {
+  "REF615_SIM_01": "AA1H1H01BCF1",
+  "REU615_SIM_01": "AA1H1H12BAR1",
+  "RED615_SIM_01": "AA1H1311CR100BCD1",
+}
 
 STATUS_TONES = {"idle", "running", "stopped", "warning", "error"}
 
@@ -405,6 +411,12 @@ button.danger {
   font-size: 0.95rem;
 }
 
+.relay-warning {
+  margin-top: 8px;
+  color: var(--warning);
+  font-weight: 600;
+}
+
 .status-pill {
   display: inline-flex;
   align-items: center;
@@ -714,40 +726,51 @@ def build_default_bools() -> Dict[str, bool]:
     return {tag: bool_default_for(tag) for tag in COMMON_BOOL_TAGS}
 
 
+def default_ied_key_for(name: str) -> str:
+    cleaned_name = str(name or "").strip()
+    return HARDCODED_IED_KEYS_BY_NAME.get(cleaned_name, cleaned_name)
+
+
 def default_row_specs() -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-    for index in range(1, 12):
-        rows.append(
-            {
-                "enabled": True,
-                "name": f"REF615_SIM_{index:02d}",
-                "relay_type": "REF615",
-                "ip": f"10.206.204.{index + 4}",
-                "port": DEFAULT_PORT,
-            }
-        )
+  rows: List[Dict[str, Any]] = []
+  for index in range(1, 12):
+    name = f"REF615_SIM_{index:02d}"
+    rows.append(
+      {
+        "enabled": True,
+        "name": name,
+        "ied_key": default_ied_key_for(name),
+        "relay_type": "REF615",
+        "ip": f"10.206.204.{index + 4}",
+        "port": DEFAULT_PORT,
+      }
+    )
 
-    for index in range(1, 3):
-        rows.append(
-            {
-                "enabled": True,
-                "name": f"REU615_SIM_{index:02d}",
-                "relay_type": "REU615",
-                "ip": f"10.206.204.{index + 15}",
-                "port": DEFAULT_PORT,
-            }
-        )
+  for index in range(1, 3):
+    name = f"REU615_SIM_{index:02d}"
+    rows.append(
+      {
+        "enabled": True,
+        "name": name,
+        "ied_key": default_ied_key_for(name),
+        "relay_type": "REU615",
+        "ip": f"10.206.204.{index + 15}",
+        "port": DEFAULT_PORT,
+      }
+    )
 
+    name = "RED615_SIM_01"
     rows.append(
         {
             "enabled": True,
-            "name": "RED615_SIM_01",
+            "name": name,
+            "ied_key": default_ied_key_for(name),
             "relay_type": "RED615",
             "ip": "10.206.204.18",
             "port": DEFAULT_PORT,
         }
     )
-    return rows
+  return rows
 
 
 def render_ip_alias_script(ip_addresses: List[str]) -> str:
@@ -821,6 +844,51 @@ def coerce_network_adapter(value: Any, adapters: List[Dict[str, str]]) -> str:
   return requested or DEFAULT_NETWORK_ADAPTER
 
 
+def list_adapter_ipv4_addresses(adapter_name: str) -> List[str]:
+  cleaned_name = str(adapter_name or "").strip()
+  if os.name != "nt" or not cleaned_name:
+    return []
+
+  escaped_name = cleaned_name.replace("'", "''")
+  command = (
+    f"$items = @(Get-NetIPAddress -InterfaceAlias '{escaped_name}' -AddressFamily IPv4 -ErrorAction SilentlyContinue | "
+    "Select-Object -ExpandProperty IPAddress); "
+    "if ($items.Count -eq 0) { '[]' } else { $items | ConvertTo-Json -Compress }"
+  )
+  try:
+    result = subprocess.run(
+      ["powershell", "-NoProfile", "-Command", command],
+      capture_output=True,
+      text=True,
+      timeout=8,
+      check=False,
+      creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+  except Exception:
+    return []
+
+  raw_output = result.stdout.strip()
+  if result.returncode != 0 or not raw_output:
+    return []
+
+  try:
+    payload = json.loads(raw_output)
+  except json.JSONDecodeError:
+    return []
+
+  if isinstance(payload, str):
+    payload = [payload]
+  if not isinstance(payload, list):
+    return []
+
+  addresses: List[str] = []
+  for entry in payload:
+    value = str(entry or "").strip()
+    if value and value not in addresses:
+      addresses.append(value)
+  return addresses
+
+
 def render_ip_alias_script_for_adapter(adapter_name: str, ip_addresses: List[str]) -> str:
     unique_ips = []
     seen = set()
@@ -870,9 +938,11 @@ foreach ($ipAddress in $ipAddresses) {{
       New-NetIPAddress -InterfaceAlias $adapterName -IPAddress $ipAddress -PrefixLength $prefixLength -AddressFamily IPv4 -ErrorAction Stop | Out-Null
       Write-Host "Added $ipAddress to $adapterName"
     }} catch {{
-      Write-Warning "Failed to add $ipAddress to $adapterName: $($_.Exception.Message)"
+      Write-Warning ("Failed to add {{0}} to {{1}}: {{2}}" -f $ipAddress, $adapterName, $_.Exception.Message)
     }}
 }}
+
+Start-Sleep -Seconds 5
 '''
 
 
@@ -881,6 +951,7 @@ class RelayRow:
     row_id: int
     enabled: bool
     name: str
+    ied_key: str
     relay_type: str
     ip: str
     port: int
@@ -902,6 +973,8 @@ class LauncherState:
         self.rows: List[RelayRow] = []
         self.network_adapter_options: List[Dict[str, str]] = list_network_adapters()
         self.network_adapter = DEFAULT_NETWORK_ADAPTER
+        self.adapter_ipv4_addresses: List[str] = []
+        self.adapter_ip_refresh_ms = 0
         self.logs: Deque[str] = deque(maxlen=MAX_LOG_LINES)
         self.exe_path = DEFAULT_EXE_FIELD
         self.auto_random_enabled = False
@@ -913,6 +986,7 @@ class LauncherState:
         self._load_state()
         with self.lock:
             self._write_all_runtime_files_unlocked(log=False)
+            self._cleanup_stale_runtime_files_unlocked(log=False)
             self._generate_ip_alias_script_unlocked(log=False)
 
     def configure_service_endpoint(self, host: str, port: int) -> None:
@@ -937,28 +1011,28 @@ class LauncherState:
             self._log_unlocked("Launcher stopped")
 
     def snapshot(self) -> Dict[str, Any]:
-        with self.lock:
-            self._poll_processes_unlocked()
-            rows = [self._row_to_api_dict(row, index) for index, row in enumerate(self.rows, start=1)]
-            running = sum(1 for row in self.rows if row.process is not None and row.process.poll() is None)
-            enabled = sum(1 for row in self.rows if row.enabled)
-            return {
-                "activity": self.activity,
-                "auto_random_enabled": self.auto_random_enabled,
-                "browser_url": self.browser_url,
-                "exe_path": self.exe_path,
-                "network_adapter": self.network_adapter,
-                "network_adapter_options": list(self.network_adapter_options),
-                "relay_types": list(RELAY_ANALOG_TAGS.keys()),
-                "rows": rows,
-                "stats": {
-                    "total": len(self.rows),
-                    "enabled": enabled,
-                    "running": running,
-                },
-                "log_lines": list(self.logs),
-                "ip_script_path": to_relative_posix(TOOLS_DIR / "add_ip_aliases.ps1"),
-            }
+      with self.lock:
+        self._refresh_adapter_ipv4_addresses_unlocked()
+        self._poll_processes_unlocked()
+        rows = [self._row_to_api_dict(row, index) for index, row in enumerate(self.rows, start=1)]
+        running = sum(1 for row in self.rows if row.process is not None and row.process.poll() is None)
+        enabled = sum(1 for row in self.rows if row.enabled)
+        return {
+          "activity": self.activity,
+          "auto_random_enabled": self.auto_random_enabled,
+          "browser_url": self.browser_url,
+          "network_adapter": self.network_adapter,
+          "network_adapter_options": list(self.network_adapter_options),
+          "relay_types": list(RELAY_ANALOG_TAGS.keys()),
+          "rows": rows,
+          "stats": {
+            "total": len(self.rows),
+            "enabled": enabled,
+            "running": running,
+          },
+          "log_lines": list(self.logs),
+          "ip_script_path": to_relative_posix(TOOLS_DIR / "add_ip_aliases.ps1"),
+        }
 
     def update_settings(self, payload: Dict[str, Any]) -> str:
       with self.lock:
@@ -972,7 +1046,9 @@ class LauncherState:
           self.network_adapter = requested_adapter
         else:
           self.network_adapter = coerce_network_adapter(self.network_adapter, self.network_adapter_options)
+        self._refresh_adapter_ipv4_addresses_unlocked(force=True)
         self._write_all_runtime_files_unlocked(log=False)
+        self._cleanup_stale_runtime_files_unlocked(log=False)
         self._generate_ip_alias_script_unlocked(log=False)
         self._persist_state_unlocked()
         self._log_unlocked(f"Network adapter set to {self.network_adapter}")
@@ -984,6 +1060,7 @@ class LauncherState:
             row = self._new_row_unlocked(relay_type)
             self.rows.append(row)
             self._write_row_runtime_files_unlocked(row, log=False)
+            self._cleanup_stale_runtime_files_unlocked(log=False)
             self._generate_ip_alias_script_unlocked(log=False)
             self._persist_state_unlocked()
             self._log_unlocked(f"Added {row.name}")
@@ -995,6 +1072,7 @@ class LauncherState:
             previous = (row.name, row.relay_type, row.ip, row.port)
             self._apply_row_payload_unlocked(row, payload)
             self._write_row_runtime_files_unlocked(row, log=False)
+            self._cleanup_stale_runtime_files_unlocked(log=False)
             self._generate_ip_alias_script_unlocked(log=False)
             self._persist_state_unlocked()
             current = (row.name, row.relay_type, row.ip, row.port)
@@ -1009,6 +1087,7 @@ class LauncherState:
             row = self._require_row_unlocked(row_id)
             self._stop_row_unlocked(row, log=False)
             self.rows = [candidate for candidate in self.rows if candidate.row_id != row_id]
+            self._cleanup_stale_runtime_files_unlocked(log=False)
             self._generate_ip_alias_script_unlocked(log=False)
             self._persist_state_unlocked()
             self._log_unlocked(f"Removed {row.name}")
@@ -1018,15 +1097,17 @@ class LauncherState:
         with self.lock:
             row = self._require_row_unlocked(row_id)
             self._write_row_runtime_files_unlocked(row, log=True)
+            self._cleanup_stale_runtime_files_unlocked(log=False)
             self._persist_state_unlocked()
             return self.activity
 
     def write_all_runtime_files(self) -> str:
-        with self.lock:
-            self._write_all_runtime_files_unlocked(log=False)
-            self._persist_state_unlocked()
-            self._log_unlocked(f"Wrote runtime JSON files for {len(self.rows)} relays")
-            return self.activity
+      with self.lock:
+        self._write_all_runtime_files_unlocked(log=False)
+        self._cleanup_stale_runtime_files_unlocked(log=True)
+        self._persist_state_unlocked()
+        self._log_unlocked(f"Wrote runtime JSON files for {len(self.rows)} relays")
+        return self.activity
 
     def start_row(self, row_id: int) -> str:
         with self.lock:
@@ -1164,6 +1245,7 @@ class LauncherState:
             self.exe_path = DEFAULT_EXE_FIELD
             self.network_adapter_options = list_network_adapters()
             self.network_adapter = coerce_network_adapter(payload.get("network_adapter", DEFAULT_NETWORK_ADAPTER), self.network_adapter_options)
+            self._refresh_adapter_ipv4_addresses_unlocked(force=True)
             self.auto_random_enabled = bool(payload.get("auto_random_enabled", False))
             rows_payload = payload.get("rows")
             if not isinstance(rows_payload, list) or not rows_payload:
@@ -1179,7 +1261,7 @@ class LauncherState:
     def _persist_state_unlocked(self) -> None:
         RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
         payload = {
-          "exe_path": DEFAULT_EXE_FIELD,
+          "exe_path": self.exe_path,
             "network_adapter": self.network_adapter,
             "auto_random_enabled": self.auto_random_enabled,
             "rows": [self._row_to_state_dict(row) for row in self.rows],
@@ -1191,14 +1273,15 @@ class LauncherState:
             "id": row.row_id,
             "enabled": row.enabled,
             "name": row.name,
+            "ied_key": row.ied_key,
             "relay_type": row.relay_type,
             "ip": row.ip,
             "port": row.port,
             "analogs": self._ordered_entries(row.analogs),
             "words": self._ordered_entries(row.words),
             "bools": self._ordered_entries(row.bools),
-        "analog_random_ranges": self._ordered_range_entries(row.analog_random_ranges),
-        "word_random_ranges": self._ordered_range_entries(row.word_random_ranges),
+            "analog_random_ranges": self._ordered_range_entries(row.analog_random_ranges),
+            "word_random_ranges": self._ordered_range_entries(row.word_random_ranges),
         }
 
     def _row_to_api_dict(self, row: RelayRow, position: int) -> Dict[str, Any]:
@@ -1208,18 +1291,51 @@ class LauncherState:
             "position": position,
             "enabled": row.enabled,
             "name": row.name,
+            "ied_key": row.ied_key,
             "relay_type": row.relay_type,
             "ip": row.ip,
             "port": row.port,
             "status": row.status_text,
             "status_tone": row.status_tone,
             "running": running,
+            "ip_alias_present": row.ip in self.adapter_ipv4_addresses,
             "analogs": self._ordered_entries(row.analogs),
             "words": self._ordered_entries(row.words),
             "bools": self._ordered_entries(row.bools),
             "analog_random_ranges": self._ordered_range_entries(row.analog_random_ranges),
             "word_random_ranges": self._ordered_range_entries(row.word_random_ranges),
         }
+
+    def _refresh_adapter_ipv4_addresses_unlocked(self, force: bool = False) -> None:
+        current_ms = now_ms()
+        if not force and (current_ms - self.adapter_ip_refresh_ms) < 3000:
+            return
+        self.adapter_ipv4_addresses = list_adapter_ipv4_addresses(self.network_adapter)
+        self.adapter_ip_refresh_ms = current_ms
+
+    def _cleanup_stale_runtime_files_unlocked(self, log: bool) -> None:
+        RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+        expected_paths = {STATE_FILE.resolve()}
+        for row in self.rows:
+            for path in self._runtime_paths_unlocked(row):
+                expected_paths.add(path.resolve())
+
+        removed_count = 0
+        for candidate in RUNTIME_DIR.iterdir():
+            if candidate.is_dir():
+                continue
+            if candidate.resolve() in expected_paths:
+                continue
+            if not candidate.name.endswith(("_config.json", "_values.json", "_server.log")):
+                continue
+            try:
+                candidate.unlink()
+                removed_count += 1
+            except OSError:
+                continue
+
+        if removed_count > 0 and log:
+            self._log_unlocked(f"Removed {removed_count} stale runtime files")
 
     @staticmethod
     def _ordered_entries(mapping: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -1236,6 +1352,7 @@ class LauncherState:
         row_id = int(payload.get("id") or self.next_row_id)
         self.next_row_id = max(self.next_row_id, row_id + 1)
         name = str(payload.get("name", "")).strip() or self._suggest_name_unlocked(relay_type)
+        ied_key = str(payload.get("ied_key", "")).strip() or default_ied_key_for(name)
         ip = str(payload.get("ip", "")).strip() or self._suggest_ip_unlocked()
         port = coerce_port(payload.get("port", DEFAULT_PORT))
         analogs = self._coerce_entries(payload.get("analogs"), "analogs", relay_type)
@@ -1255,6 +1372,7 @@ class LauncherState:
             row_id=row_id,
             enabled=parse_bool(payload.get("enabled", True), True),
             name=name,
+            ied_key=ied_key,
             relay_type=relay_type,
             ip=ip,
             port=port,
@@ -1272,6 +1390,7 @@ class LauncherState:
             row_id=self.next_row_id,
             enabled=True,
             name=self._suggest_name_unlocked(relay_type),
+            ied_key="",
             relay_type=relay_type,
             ip=self._suggest_ip_unlocked(),
             port=DEFAULT_PORT,
@@ -1281,6 +1400,7 @@ class LauncherState:
             analog_random_ranges=self._coerce_range_entries(None, "analogs", list(analogs.keys())),
             word_random_ranges=self._coerce_range_entries(None, "words", list(words.keys())),
         )
+        row.ied_key = default_ied_key_for(row.name)
         self.next_row_id += 1
         return row
 
@@ -1289,6 +1409,7 @@ class LauncherState:
         previous_relay_type = row.relay_type
         row.enabled = parse_bool(payload.get("enabled", row.enabled), row.enabled)
         row.name = str(payload.get("name", row.name)).strip() or row.name
+        row.ied_key = str(payload.get("ied_key", row.ied_key)).strip() or default_ied_key_for(row.name)
         row.relay_type = relay_type
         row.ip = str(payload.get("ip", row.ip)).strip() or row.ip
         row.port = coerce_port(payload.get("port", row.port), row.port)
@@ -1445,7 +1566,8 @@ class LauncherState:
     def _config_payload_unlocked(self, row: RelayRow, values_path: Path) -> Dict[str, Any]:
         return {
             "enabled": bool(row.enabled),
-            "ied_name": row.name,
+        "display_name": row.name,
+        "ied_name": row.ied_key,
             "relay_type": row.relay_type,
             "bind_ip": row.ip,
             "port": row.port,
@@ -1502,7 +1624,7 @@ class LauncherState:
             command = [
                 str(executable),
                 "--ied-name",
-                row.name,
+              row.ied_key,
                 "--type",
                 row.relay_type,
                 "--bind",
@@ -1520,7 +1642,7 @@ class LauncherState:
             )
             row.process_log = log_handle
             self._set_status_unlocked(row, "running", "running")
-            self._log_unlocked(f"Started {row.name} on {row.ip}:{row.port}")
+            self._log_unlocked(f"Started {row.name} ({row.ied_key}) on {row.ip}:{row.port}")
         except Exception as exc:
             if log_handle is not None:
                 log_handle.close()
@@ -1820,12 +1942,19 @@ function renderGlobalRandomDialog(snapshot) {
 function rowCard(row) {
   const open = store.openRows.has(row.id) ? 'open' : '';
   const statusClass = escapeHtml(row.status_tone || 'idle');
+  const iedKeyMeta = row.ied_key && row.ied_key !== row.name
+    ? ` · IED key ${escapeHtml(row.ied_key)}`
+    : '';
+  const aliasWarning = row.ip_alias_present
+    ? ''
+    : `<div class="help-line relay-warning">IP alias ${escapeHtml(row.ip)} is missing on ${escapeHtml(store.snapshot.network_adapter || 'selected adapter')}</div>`;
   return `
     <article class="relay-card ${statusClass}">
       <div class="relay-head">
         <div>
           <h3>${escapeHtml(row.name)}</h3>
-          <div class="relay-meta">#${row.position} · ${escapeHtml(row.relay_type)} · ${escapeHtml(row.ip)}:${escapeHtml(row.port)}</div>
+          <div class="relay-meta">#${row.position} · ${escapeHtml(row.relay_type)} · ${escapeHtml(row.ip)}:${escapeHtml(row.port)}${iedKeyMeta}</div>
+          ${aliasWarning}
         </div>
         <div class="status-pill ${statusClass}">${escapeHtml(row.status)}</div>
       </div>
@@ -1842,7 +1971,11 @@ function rowCard(row) {
           <div class="relay-fields">
             <div class="field">
               <label>Name</label>
-              <input name="name" type="text" value="${escapeHtml(row.name)}">
+              <input name="name" type="text" value="${escapeHtml(row.name)}" data-previous-value="${escapeHtml(row.name)}">
+            </div>
+            <div class="field">
+              <label>IED key</label>
+              <input name="ied_key" type="text" value="${escapeHtml(row.ied_key || row.name)}">
             </div>
             <div class="field">
               <label>Relay type</label>
@@ -1921,6 +2054,13 @@ function renderNetworkAdapterOptions(snapshot) {
   }).join('');
 }
 
+function serializeLauncherSettings() {
+  const adapterSelect = document.querySelector('#network-adapter-select');
+  return {
+    network_adapter: adapterSelect ? adapterSelect.value : '',
+  };
+}
+
 function render(snapshot) {
   store.snapshot = snapshot;
   const app = document.querySelector('#app');
@@ -1964,6 +2104,7 @@ function render(snapshot) {
               </select>
             </div>
             <div class="settings-actions">
+              <button type="button" class="secondary" data-action="save-launcher-settings">Save launcher settings</button>
               <button type="button" class="secondary" data-action="refresh-network-adapters">Refresh</button>
               <button type="button" class="secondary" data-action="prepare-network">Prepare network</button>
             </div>
@@ -2076,6 +2217,7 @@ function serializeEntries(section) {
 function serializeRowForm(form) {
   return {
     name: form.elements.name.value.trim(),
+    ied_key: form.elements.ied_key.value.trim(),
     relay_type: form.elements.relay_type.value,
     ip: form.elements.ip.value.trim(),
     port: Number.parseInt(form.elements.port.value || '102', 10),
@@ -2288,9 +2430,10 @@ document.addEventListener('click', async (event) => {
     if (action === 'add-row') {
       const relayType = document.querySelector('#new-relay-type').value;
       payload = await api('/api/rows', { body: { relay_type: relayType } });
+    } else if (action === 'save-launcher-settings') {
+      payload = await api('/api/settings', { body: serializeLauncherSettings() });
     } else if (action === 'refresh-network-adapters') {
-      const adapterSelect = document.querySelector('#network-adapter-select');
-      payload = await api('/api/settings', { body: { network_adapter: adapterSelect ? adapterSelect.value : '' } });
+      payload = await api('/api/settings', { body: serializeLauncherSettings() });
     } else if (action === 'prepare-network') {
       payload = await api('/api/actions/prepare-network');
     } else if (action === 'shutdown-service') {
@@ -2370,7 +2513,7 @@ document.addEventListener('click', async (event) => {
 document.addEventListener('change', async (event) => {
   if (event.target.id === 'network-adapter-select') {
     try {
-      const payload = await api('/api/settings', { body: { network_adapter: event.target.value } });
+      const payload = await api('/api/settings', { body: serializeLauncherSettings() });
       setBanner(payload.message || 'Network adapter saved');
       render(payload.state);
     } catch (error) {
@@ -2386,6 +2529,29 @@ document.addEventListener('change', async (event) => {
   const section = form.querySelector('[data-kind="analogs"] .tag-list');
   section.innerHTML = '';
   defaultEntries(event.target.value, 'analogs').forEach((entry) => appendTagRow(section, 'analogs', entry));
+});
+
+document.addEventListener('input', (event) => {
+  if (!event.target.matches('.relay-form input[name="name"]')) {
+    return;
+  }
+
+  const nameInput = event.target;
+  const form = nameInput.closest('.relay-form');
+  if (!form) {
+    return;
+  }
+
+  const keyInput = form.elements.ied_key;
+  if (!keyInput) {
+    return;
+  }
+
+  const previousValue = nameInput.dataset.previousValue || '';
+  if (keyInput.value.trim() === '' || keyInput.value === previousValue) {
+    keyInput.value = nameInput.value;
+  }
+  nameInput.dataset.previousValue = nameInput.value;
 });
 
 document.addEventListener('toggle', (event) => {

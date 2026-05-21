@@ -1,4 +1,4 @@
-from IEC61850_IED_Sim_Launcher_preweb import main
+from launcher_service import main
 
 
 if __name__ == "__main__":
