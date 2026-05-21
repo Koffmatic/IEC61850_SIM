@@ -5,6 +5,7 @@ import json
 import os
 import random
 import subprocess
+import sys
 import threading
 import time
 import webbrowser
@@ -18,13 +19,19 @@ from urllib.error import URLError
 from urllib.request import urlopen
 
 
-BASE_DIR = Path(__file__).resolve().parent
+def resolve_base_dir() -> Path:
+  if getattr(sys, "frozen", False):
+    return Path(sys.executable).resolve().parent
+  return Path(__file__).resolve().parent
+
+
+BASE_DIR = resolve_base_dir()
 APP_DATA_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "Koffmatic" / "IEDsimulator"
 RUNTIME_DIR = APP_DATA_DIR / "runtime"
 TOOLS_DIR = APP_DATA_DIR / "tools"
 STATE_FILE = RUNTIME_DIR / "launcher_state.json"
 
-DEFAULT_EXE_FIELD = "./ied_mms_server_real.exe"
+DEFAULT_EXE_FIELD = "./ied_mms_server.exe"
 DEFAULT_NETWORK_ADAPTER = "Ethernet"
 DEFAULT_PORT = 102
 DEFAULT_WEB_HOST = "127.0.0.1"
@@ -1597,9 +1604,18 @@ class LauncherState:
     def _resolved_executable_unlocked(self) -> Tuple[str, Path]:
         raw_path = self.exe_path.strip() or DEFAULT_EXE_FIELD
         executable = Path(raw_path)
-        if not executable.is_absolute():
-            executable = (BASE_DIR / executable).resolve()
-        return raw_path, executable
+        if executable.is_absolute():
+            return raw_path, executable
+
+        candidates = [(BASE_DIR / executable).resolve()]
+        if getattr(sys, "frozen", False):
+            candidates.append((BASE_DIR / "_internal" / executable).resolve())
+
+        for candidate in candidates:
+            if candidate.exists():
+                return raw_path, candidate
+
+        return raw_path, candidates[0]
 
     def _start_row_unlocked(self, row: RelayRow) -> None:
         if row.process is not None and row.process.poll() is None:

@@ -12,7 +12,7 @@ The main user interface is a local browser-based launcher. It manages relay rows
   - local HTTP service and browser UI
   - persists launcher state under `%LOCALAPPDATA%\Koffmatic\IEDsimulator\runtime`
   - writes relay-specific `*_config.json`, `*_values.json`, and `*_server.log` files
-  - launches the packaged MMS server executable from the fixed path `./ied_mms_server_real.exe`
+  - launches the packaged MMS server executable from the fixed path `./ied_mms_server.exe`
 - `src/ied_mms_server.c`
   - IEC 61850 MMS server implementation used by the packaged executable
   - supports runtime `--ied-name`, relay type selection, bind IP, port, and values JSON updates
@@ -65,7 +65,7 @@ The browser UI lets you:
 The executable path is no longer user-editable in the UI. The launcher always starts the packaged MMS server from:
 
 ```text
-./ied_mms_server_real.exe
+./ied_mms_server.exe
 ```
 
 ## Default relay inventory
@@ -144,7 +144,7 @@ Each relay values file follows this structure:
 The MMS server is launched in this form:
 
 ```text
-ied_mms_server_real.exe --ied-name <ied_key> --type <relay_type> --bind <ip> --port <port> --values <values_json_path>
+ied_mms_server.exe --ied-name <ied_key> --type <relay_type> --bind <ip> --port <port> --values <values_json_path>
 ```
 
 The launcher writes both the display name and the protocol-facing IED name to each relay config JSON.
@@ -179,3 +179,28 @@ The build uses:
 - Port `102` is the intended default for MMS testing.
 - The launcher can still write JSON and helper scripts even if the executable is missing, but relay start will fail with `missing exe`.
 - Row changes to name, relay type, bind IP, or port require restarting that relay process before the running instance reflects the new values.
+
+## Building a Windows installer
+
+Do not chain `PyInstaller` and `ISCC` into one command. They are separate tools and must be run as separate steps.
+
+The recommended way is to use the included PowerShell build script:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\build_windows_installer.ps1
+```
+
+What the script does:
+
+- builds the launcher bundle with PyInstaller into `dist-build\IEC61850_IED_Sim_Launcher`
+- avoids the locked `dist\IEC61850_IED_Sim_Launcher` cleanup problem by using a separate build output directory
+- tries to locate `ISCC.exe` from `PATH` or common Inno Setup install locations
+- compiles the installer from `build\installer\IEDSimulator.iss`
+
+If Inno Setup is not installed yet, you can still build just the launcher bundle:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\build_windows_installer.ps1 -SkipInstaller
+```
+
+After installing Inno Setup 6, run the same script again without `-SkipInstaller` to produce the final installer in `dist-installer`.

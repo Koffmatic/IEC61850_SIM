@@ -20,7 +20,6 @@ runtime/*.log
 
 # Local server binaries and backup archives
 ied_mms_server.exe
-ied_mms_server_real.exe
 *.zip
 
 # Preserve nested vendor git metadata locally without committing it
