@@ -194,6 +194,8 @@ What the script does:
 
 - builds the launcher bundle with PyInstaller into `dist-build\IEC61850_IED_Sim_Launcher`
 - avoids the locked `dist\IEC61850_IED_Sim_Launcher` cleanup problem by using a separate build output directory
+- prompts for installer version changes with defaults `major=no`, `minor=no`, `patch=yes`
+- falls back to those defaults automatically in non-interactive runs that cannot answer prompts
 - tries to locate `ISCC.exe` from `PATH` or common Inno Setup install locations
 - compiles the installer from `build\installer\IEDSimulator.iss`
 
@@ -204,3 +206,9 @@ powershell -ExecutionPolicy Bypass -File .\tools\build_windows_installer.ps1 -Sk
 ```
 
 After installing Inno Setup 6, run the same script again without `-SkipInstaller` to produce the final installer in `dist-installer`.
+
+You can also bypass the version prompt explicitly:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\build_windows_installer.ps1 -NoVersionPrompt
+```

@@ -532,8 +532,10 @@ summary {
 .modal-overlay {
   position: fixed;
   inset: 0;
+  width: 100vw;
+  height: 100vh;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: center;
   overflow-y: auto;
   padding: 18px;
@@ -543,8 +545,8 @@ summary {
 
 .modal-card {
   width: min(900px, 100%);
-  margin: auto 0;
-  max-height: calc(100vh - 36px);
+  margin: auto;
+  max-height: calc(100dvh - 36px);
   overflow: auto;
   padding: 20px;
   border-radius: var(--radius-lg);
@@ -2147,10 +2149,10 @@ function render(snapshot) {
         <h3>Launcher log</h3>
         <pre>${escapeHtml(snapshot.log_lines.join('\n'))}</pre>
       </section>
-
-      ${renderRandomDialog(snapshot)}
-      ${renderGlobalRandomDialog(snapshot)}
     </main>
+
+    ${renderRandomDialog(snapshot)}
+    ${renderGlobalRandomDialog(snapshot)}
   `;
 }
 
