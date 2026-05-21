@@ -177,4 +177,4 @@ Ensimmainen kaytannon tavoite on tama:
 3. varmista, etta Moxa MGate 5119 nakee `REF615_SIM_01`:n IEC 61850 MMS -serverina
 4. vasta taman jalkeen laajenna muihin REF615-, REU615- ja RED615-instansseihin
 
-Kun yksi REF615-palvelin nakyy Moxalle oikein, loppujen releiden ajaminen samalla rungolla on suoraviivaista.# IEC61850_SIM
+Kun yksi REF615-palvelin nakyy Moxalle oikein, loppujen releiden ajaminen samalla rungolla on suoraviivaista.
