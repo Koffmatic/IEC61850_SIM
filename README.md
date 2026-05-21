@@ -56,6 +56,8 @@ The browser UI lets you:
 - edit relay `Name`, `IED key`, relay type, bind IP, and port
 - edit analog, word, and boolean tag lists per relay
 - edit live values and write them directly to runtime JSON
+- save the current launcher configuration into a single JSON file for transfer to another machine
+- open a previously exported configuration file and replace the current relay setup
 - start or stop a single relay or all enabled relays
 - enable continuous random value updates
 - regenerate the IP alias PowerShell script
@@ -102,6 +104,29 @@ Important files and directories:
   - generated PowerShell helper for adding missing adapter IP aliases
 
 The launcher also removes stale runtime files that no longer belong to any configured relay row.
+
+## Configuration import and export
+
+Use `Save configuration` in the browser UI to export the current launcher setup into a single JSON file.
+
+The exported file contains:
+
+- launcher-level settings that affect the relay setup, such as the selected network adapter and auto-random state
+- the full relay row list
+- relay names, `IED key` values, relay types, IP addresses, and ports
+- analog, word, and boolean tag definitions
+- current tag values and configured random ranges
+
+Use `Open configuration` to load one of these exported JSON files on the same machine or another machine.
+
+Import behavior:
+
+- the current launcher configuration is replaced with the imported one
+- currently running relay processes are stopped before the new configuration is applied
+- runtime `*_config.json` and `*_values.json` files are regenerated from the imported configuration
+- stale runtime files that no longer belong to any relay row are removed
+
+This makes it easy to move a complete relay simulator setup between development, test, and customer machines without copying the whole runtime directory manually.
 
 ## Network preparation on Windows
 

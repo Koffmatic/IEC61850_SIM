@@ -40,6 +40,7 @@ LAUNCHER_PROBE_TIMEOUT_S = 0.25
 AUTO_RANDOM_INTERVAL_MS = 1000
 PROCESS_POLL_INTERVAL_MS = 500
 MAX_LOG_LINES = 250
+CONFIG_EXPORT_VERSION = 1
 
 HARDCODED_IED_KEYS_BY_NAME = {
   "REF615_SIM_01": "AA1H1H01BCF1",
@@ -1119,6 +1120,51 @@ class LauncherState:
         self._log_unlocked(f"Wrote runtime JSON files for {len(self.rows)} relays")
         return self.activity
 
+    def export_configuration(self) -> Dict[str, Any]:
+      with self.lock:
+        return {
+          "format": "ied-simulator-configuration",
+          "version": CONFIG_EXPORT_VERSION,
+          "exported_at_unix_ms": now_ms(),
+          "state": {
+            "network_adapter": self.network_adapter,
+            "auto_random_enabled": self.auto_random_enabled,
+            "rows": [self._row_to_state_dict(row) for row in self.rows],
+          },
+        }
+
+    def import_configuration(self, payload: Dict[str, Any]) -> str:
+      with self.lock:
+        imported_state = payload.get("state", payload)
+        if not isinstance(imported_state, dict):
+          raise ValueError("Configuration file is invalid")
+
+        rows_payload = imported_state.get("rows")
+        if not isinstance(rows_payload, list) or not rows_payload:
+          raise ValueError("Configuration file does not contain relay rows")
+
+        for row in list(self.rows):
+          self._stop_row_unlocked(row, log=False)
+
+        self.network_adapter_options = list_network_adapters()
+        imported_adapter = imported_state.get("network_adapter", self.network_adapter)
+        self.network_adapter = coerce_network_adapter(imported_adapter, self.network_adapter_options)
+        self._refresh_adapter_ipv4_addresses_unlocked(force=True)
+        self.auto_random_enabled = bool(imported_state.get("auto_random_enabled", False))
+
+        self.rows = []
+        self.next_row_id = 1
+        for raw_row in rows_payload:
+          row = self._coerce_row_from_payload_unlocked(raw_row)
+          self.rows.append(row)
+
+        self._write_all_runtime_files_unlocked(log=False)
+        self._cleanup_stale_runtime_files_unlocked(log=False)
+        self._generate_ip_alias_script_unlocked(log=False)
+        self._persist_state_unlocked()
+        self._log_unlocked(f"Imported configuration with {len(self.rows)} relay rows")
+        return self.activity
+
     def start_row(self, row_id: int) -> str:
         with self.lock:
             row = self._require_row_unlocked(row_id)
@@ -1772,6 +1818,8 @@ const store = {
   pollHandle: null,
 };
 
+const importInputId = 'configuration-import-input';
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -1805,6 +1853,56 @@ async function api(path, options = {}) {
     throw new Error(payload.error || 'Request failed');
   }
   return payload;
+}
+
+async function readJsonFile(file) {
+  const text = await file.text();
+  try {
+    return JSON.parse(text);
+  } catch (_error) {
+    throw new Error('Selected file is not valid JSON');
+  }
+}
+
+async function downloadConfiguration() {
+  const response = await fetch('/api/configuration-export');
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload.ok === false) {
+    throw new Error(payload.error || 'Export failed');
+  }
+
+  const blob = new Blob([JSON.stringify(payload.configuration, null, 2)], { type: 'application/json' });
+  const url = window.URL.createObjectURL(blob);
+  const stamp = new Date().toISOString().replaceAll(':', '-');
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `ied-simulator-configuration-${stamp}.json`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(url);
+}
+
+function ensureImportInput() {
+  let input = document.getElementById(importInputId);
+  if (input) {
+    return input;
+  }
+
+  input = document.createElement('input');
+  input.id = importInputId;
+  input.type = 'file';
+  input.accept = 'application/json,.json';
+  input.hidden = true;
+  document.body.appendChild(input);
+  return input;
+}
+
+async function importConfigurationFromFile(file) {
+  const configuration = await readJsonFile(file);
+  return api('/api/configuration-import', {
+    body: configuration,
+  });
 }
 
 function defaultEntries(relayType, kind) {
@@ -2112,6 +2210,8 @@ function render(snapshot) {
               <button type="button" class="secondary" data-action="stop-all">Stop all</button>
               <button type="button" class="secondary" data-action="toggle-auto-random">${snapshot.auto_random_enabled ? 'Stop auto random' : 'Start auto random'}</button>
               <button type="button" class="secondary" data-action="open-global-random-settings">Global random settings</button>
+              <button type="button" class="secondary" data-action="export-configuration">Save configuration</button>
+              <button type="button" class="secondary" data-action="import-configuration">Open configuration</button>
               <button type="button" class="danger" data-action="shutdown-service">Shutdown service</button>
             </div>
           </div>
@@ -2449,6 +2549,19 @@ document.addEventListener('click', async (event) => {
     if (action === 'add-row') {
       const relayType = document.querySelector('#new-relay-type').value;
       payload = await api('/api/rows', { body: { relay_type: relayType } });
+    } else if (action === 'export-configuration') {
+      await downloadConfiguration();
+      setBanner('Configuration exported');
+      return;
+    } else if (action === 'import-configuration') {
+      const confirmed = window.confirm('Replace the current launcher configuration with a file from another machine?');
+      if (!confirmed) {
+        return;
+      }
+      const input = ensureImportInput();
+      input.value = '';
+      input.click();
+      return;
     } else if (action === 'save-launcher-settings') {
       payload = await api('/api/settings', { body: serializeLauncherSettings() });
     } else if (action === 'refresh-network-adapters') {
@@ -2530,6 +2643,23 @@ document.addEventListener('click', async (event) => {
 });
 
 document.addEventListener('change', async (event) => {
+  if (event.target.id === importInputId) {
+    const file = event.target.files && event.target.files[0];
+    event.target.value = '';
+    if (!file) {
+      return;
+    }
+
+    try {
+      const payload = await importConfigurationFromFile(file);
+      setBanner(payload.message || 'Configuration imported');
+      render(payload.state);
+    } catch (error) {
+      setBanner(error.message, 'error');
+    }
+    return;
+  }
+
   if (event.target.id === 'network-adapter-select') {
     try {
       const payload = await api('/api/settings', { body: serializeLauncherSettings() });
@@ -2618,6 +2748,16 @@ def build_handler(state: LauncherState):
             if self.path == "/api/state":
                 self._send_json(HTTPStatus.OK, {"ok": True, "state": state.snapshot()})
                 return
+            if self.path == "/api/configuration-export":
+              filename = f"ied-simulator-configuration-{time.strftime('%Y%m%d-%H%M%S')}.json"
+              body = json.dumps({"ok": True, "configuration": state.export_configuration()}, indent=2).encode("utf-8")
+              self._send_bytes(
+                body,
+                "application/json; charset=utf-8",
+                HTTPStatus.OK,
+                headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+              )
+              return
             self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Not found"})
 
         def do_POST(self) -> None:
@@ -2627,6 +2767,8 @@ def build_handler(state: LauncherState):
                     message = state.update_settings(payload)
                 elif self.path == "/api/rows":
                     message = state.add_row(payload)
+                elif self.path == "/api/configuration-import":
+                  message = state.import_configuration(payload)
                 elif self.path == "/api/actions/start-all":
                     message = state.start_all()
                 elif self.path == "/api/actions/stop-all":
@@ -2699,10 +2841,18 @@ def build_handler(state: LauncherState):
             body = json.dumps(payload).encode("utf-8")
             self._send_bytes(body, "application/json; charset=utf-8", status)
 
-        def _send_bytes(self, body: bytes, content_type: str, status: HTTPStatus = HTTPStatus.OK) -> None:
+        def _send_bytes(
+            self,
+            body: bytes,
+            content_type: str,
+            status: HTTPStatus = HTTPStatus.OK,
+            headers: Optional[Dict[str, str]] = None,
+        ) -> None:
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
+            for key, value in (headers or {}).items():
+                self.send_header(key, value)
             self.end_headers()
             self.wfile.write(body)
 
