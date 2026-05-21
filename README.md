@@ -212,3 +212,14 @@ You can also bypass the version prompt explicitly:
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\tools\build_windows_installer.ps1 -NoVersionPrompt
 ```
+
+## Licensing
+
+This repository is distributed under the GNU GPL v3. See the root [LICENSE](LICENSE) file.
+
+Third-party components used directly in this repository:
+
+- `vendor/libiec61850` is included in source form and retains its original GPLv3 license text in `vendor/libiec61850/COPYING`.
+- The browser-based launcher itself does not require external Python packages at runtime. See `requirements.txt`.
+
+Optional external components mentioned by the vendored library, such as WinPcap/Npcap, SQLite, or mbedTLS, are not bundled here by default and keep their own licenses if you add them separately.

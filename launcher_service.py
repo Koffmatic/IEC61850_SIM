@@ -36,6 +36,7 @@ DEFAULT_NETWORK_ADAPTER = "Ethernet"
 DEFAULT_PORT = 102
 DEFAULT_WEB_HOST = "127.0.0.1"
 DEFAULT_WEB_PORT = 8787
+LAUNCHER_PROBE_TIMEOUT_S = 0.25
 AUTO_RANDOM_INTERVAL_MS = 1000
 PROCESS_POLL_INTERVAL_MS = 500
 MAX_LOG_LINES = 250
@@ -2611,6 +2612,9 @@ def build_handler(state: LauncherState):
             if self.path == "/app.js":
                 self._send_bytes(build_app_js().encode("utf-8"), "application/javascript; charset=utf-8")
                 return
+            if self.path == "/api/ping":
+                self._send_json(HTTPStatus.OK, {"ok": True})
+                return
             if self.path == "/api/state":
                 self._send_json(HTTPStatus.OK, {"ok": True, "state": state.snapshot()})
                 return
@@ -2714,50 +2718,54 @@ def parse_args() -> argparse.Namespace:
 
 
 def launcher_is_running(url: str) -> bool:
-    try:
-        with urlopen(f"{url}/api/state", timeout=1.0) as response:
-            return response.status == HTTPStatus.OK
-    except (URLError, TimeoutError, OSError):
-        return False
+  try:
+    with urlopen(f"{url}/api/ping", timeout=LAUNCHER_PROBE_TIMEOUT_S) as response:
+      status_ok = response.status == HTTPStatus.OK
+      response.read()
+      return status_ok
+  except (URLError, TimeoutError, OSError):
+    return False
 
 
 def main() -> None:
-    args = parse_args()
-    host = args.host
-    port = coerce_port(args.port, DEFAULT_WEB_PORT)
-    display_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
-    url = f"http://{display_host}:{port}"
+  args = parse_args()
+  host = args.host
+  port = coerce_port(args.port, DEFAULT_WEB_PORT)
+  display_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+  url = f"http://{display_host}:{port}"
 
-    if launcher_is_running(url):
-        print(f"Launcher UI is already available at {url}", flush=True)
-        if not args.no_browser:
-            webbrowser.open(url)
-        return
+  print(f"Launcher service is starting at {url}...", flush=True)
 
-    state = LauncherState()
-    state.configure_service_endpoint(host, port)
-
-    try:
-        server = ThreadingHTTPServer((host, port), build_handler(state))
-    except OSError as exc:
-        message = str(exc)
-        print(f"Launcher UI appears to be running already at {url} ({message})", flush=True)
-        if not args.no_browser:
-            webbrowser.open(url)
-        return
-
-    state.start()
-    print(f"IED simulator launcher serving at {url}", flush=True)
+  if launcher_is_running(url):
+    print(f"Launcher service is already running at {url}. Closing this window.", flush=True)
     if not args.no_browser:
-        webbrowser.open(url)
+      webbrowser.open(url)
+    return
 
-    try:
-        server.serve_forever(poll_interval=0.5)
-    except KeyboardInterrupt:
-        print("Stopping launcher service...", flush=True)
-    finally:
-        server.server_close()
-        state.shutdown()
+  state = LauncherState()
+  state.configure_service_endpoint(host, port)
+
+  try:
+    server = ThreadingHTTPServer((host, port), build_handler(state))
+  except OSError as exc:
+    message = str(exc)
+    print(f"Launcher service is already running at {url}. Closing this window. Details: {message}", flush=True)
+    if not args.no_browser:
+      webbrowser.open(url)
+    return
+
+  state.start()
+  print(f"IED simulator launcher serving at {url}", flush=True)
+  if not args.no_browser:
+    webbrowser.open(url)
+
+  try:
+    server.serve_forever(poll_interval=0.5)
+  except KeyboardInterrupt:
+    print("Stopping launcher service...", flush=True)
+  finally:
+    server.server_close()
+    state.shutdown()
 
 
 if __name__ == "__main__":
